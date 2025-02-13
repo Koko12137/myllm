@@ -1,0 +1,6 @@
+{
+    "output": "tokenizer", 
+    "corpus_file": "datasets/tokenizer/processed/data.jsonl", 
+    "vocab_size": 20000, 
+    "replace": true
+}

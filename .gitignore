@@ -169,3 +169,15 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Datasets
+datasets/
+
+# JupyterLab workspace
+.jupyter/
+
+# VS Code settings
+.vscode/
+
+# output
+output/
