@@ -3,7 +3,7 @@ import os
 import torch
 import pyarrow as pa
 from torch.utils.data import Dataset
-from transformers import AutoTokenizer
+from tokenizers import Tokenizer
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -11,7 +11,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 class PretrainDataset(Dataset):
     
-    def __init__(self, table: pa.Table, tokenizer: AutoTokenizer, field: str = 'text', max_length: int = 512) -> None:
+    def __init__(self, table: pa.Table, tokenizer: Tokenizer, field: str = 'text', max_length: int = 512) -> None:
         super().__init__()
         self.table = table
         self.tokenizer = tokenizer
@@ -32,12 +32,15 @@ class PretrainDataset(Dataset):
             truncation=True, 
             max_length=self.max_length + 1, 
             padding='max_length', 
+            return_tensors='pt', 
         )
 
         # Get the input and target
-        input_ids = encodings['input_ids'][:-1]
-        target = encodings['input_ids'][1:]
-        attention_mask = encodings['attention_mask'][:-1]
+        input_ids = encodings['input_ids'][:, :-1]
+        attention_mask = encodings['attention_mask'][:, :-1]
+        labels = encodings['input_ids'][:, 1:]
+        # Mask the labels
+        labels[attention_mask == 0] = self.tokenizer.pad_token_id
         
-        return {'input_ids': input_ids, 'labels': target, 'attention_mask': attention_mask}
+        return {'input_ids': input_ids, 'labels': labels, 'attention_mask': attention_mask}
     

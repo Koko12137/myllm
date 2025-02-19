@@ -4,13 +4,16 @@ import platform
 
 import click
 
+import test
 import scripts
 import scripts.pretrain
 from test import dataset
+import test.pretrain_qwen
+import test.qwen2_flashattn
 
 
 def main() -> None:
-    # Test the pretrain model
+    # test.pretrain_qwen.pretrain_model()
     scripts.pretrain.pretrain_model()
     
     

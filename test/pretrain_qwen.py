@@ -3,10 +3,11 @@ import warnings
 
 import torch
 import pyarrow.parquet as pq
-from transformers import AutoTokenizer, TrainingArguments, Trainer
+from transformers import (
+    AutoTokenizer, TrainingArguments, Trainer, Qwen2Config
+)
 
-from models.configuration import MyLLMConfig
-from models.modeling import MyLLMForCausalLM
+from test.modeling_qwen import Qwen2ForCausalLM
 from utils.dataset import PretrainDataset
 from utils.io import io_operation
 
@@ -41,14 +42,11 @@ def pretrain_model() -> None:
     # Read pretrain config from json file
     config = json.load(open('configs/pretrain.json'))
     
-    # IO operations
-    io_operation(config)
-    
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config['tokenizer'])
 
     # Setup Language Model Config
-    lm_config = MyLLMConfig(
+    lm_config = Qwen2Config(
         num_hidden_layers=16, 
         hidden_size=1024, 
         intermediate_size=4096, 
@@ -59,8 +57,11 @@ def pretrain_model() -> None:
         num_key_value_heads=8, 
     )
     
+    # IO operations
+    io_operation(config)
+    
     # Initialize the model
-    model = MyLLMForCausalLM(lm_config, debug=False)
+    model = Qwen2ForCausalLM(lm_config)
     
     # Print the trainable parameters
     print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M")
@@ -71,7 +72,7 @@ def pretrain_model() -> None:
         save_total_limit=1, 
         save_strategy='steps', 
         save_steps=200, 
-        output_dir=config['output'], 
+        output_dir=config['output'],
         # Training arguments
         do_train=True, 
         do_eval=False, 
@@ -79,7 +80,7 @@ def pretrain_model() -> None:
         # Logging arguments
         logging_strategy='steps', 
         logging_steps=10, 
-        report_to='none', 
+        report_to='none',
         # Other arguments
         **config['training_args'], 
     )

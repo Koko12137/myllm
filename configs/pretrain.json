@@ -1,14 +1,14 @@
 {
     "dataset": "datasets/pretrain/pretrain.parquet", 
     "output": "output", 
-    "replace": false, 
+    "replace": true, 
     "tokenizer": "tokenizer", 
     "training_args": {
         "num_train_epochs": 5, 
-        "per_device_train_batch_size": 16, 
-        "learning_rate": 5e-05, 
-        "gradient_accumulation_steps": 4, 
-        "dataloader_num_workers": 4, 
+        "per_device_train_batch_size": 32, 
+        "learning_rate": "auto", 
+        "gradient_accumulation_steps": 2, 
+        "dataloader_num_workers": 10, 
         "dataloader_persistent_workers": true, 
         "use_cpu": false, 
         "deepspeed": "configs/deepspeed.json"
