@@ -1,311 +1,25 @@
 import warnings
 from functools import partial
-from typing import Callable
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
-from transformers import Cache, PreTrainedModel, GenerationMixin
+from transformers import PreTrainedModel, GenerationMixin
+from transformers.cache_utils import Cache, DynamicCache, StaticCache
+from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast, 
     CausalLMOutputWithPast, 
 )
-from transformers.integrations.sdpa_attention import sdpa_attention_forward, repeat_kv
 
-from models.configuration import MyLLMConfig
-
-
-def check_nan(module: nn.Module, grad_input: nn.Module, grad_output: nn.Module, layer_idx: int, name: str) -> None:
-    if grad_output[0] is not None:
-        output_nan = torch.isnan(grad_output[0]).sum().item()
-        assert output_nan == 0, f"NaN detected in layer {layer_idx}, name: {name}"
-    if grad_input[0] is not None:
-        input_nan = torch.isnan(grad_input[0]).sum().item()
-        assert input_nan == 0, f"NaN detected in layer {layer_idx}, name: {name}"
-    
-
-def eager_attn(
-    module: nn.Module, 
-    q_states: torch.Tensor, 
-    k_states: torch.Tensor, 
-    v_states: torch.Tensor, 
-    attention_mask: torch.Tensor, 
-    dropout: float = 0.0, 
-    scaling: float = None, 
-    **kwargs
-) -> tuple[torch.Tensor]: 
-    r"""Eager attention implementation. 
-    
-    Args:
-        module (nn.Module): 
-            The module to apply the attention.
-        q_states (torch.Tensor): 
-            The query states with shape (bsz, num_attention_heads, seq_len, attention_head_dim)
-        k_states (torch.Tensor): 
-            The key states with shape (bsz, num_attention_heads, seq_len, attention_head_dim)
-        v_states (torch.Tensor): 
-            The value states with shape (bsz, num_attention_heads, seq_len, attention_head_dim)
-        attention_mask (torch.Tensor): 
-            The attention mask with shape (bsz,1, seq_len, seq_len) 
-        dropout (float): 
-            The dropout probability. Default to 0.0. 
-        scaling (float): 
-            The scaling factor for the attention weights. 
-    """
-    if scaling is None:
-        scaling = q_states.size(-1) ** -0.5
-        
-    # Reapeat the key and value states to match the number of attention heads
-    # Output shape: (bsz, num_attention_heads, seq_len, attention_head_dim)
-    k_states = repeat_kv(k_states, module.num_key_value_groups)
-    v_states = repeat_kv(v_states, module.num_key_value_groups)
-        
-    # Compute the attention weights
-    # Output shape: (bsz, num_attention_heads, seq_len, seq_len)
-    attn_weights = torch.einsum("bhid,bhjd->bhij", q_states, k_states) * scaling
-    
-    # Add the causal mask
-    attn_weights = attn_weights + attention_mask
-    
-    # Apply the softmax, the output of softmax in padding rows are not zero
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1)
-    attn_weights = torch.dropout(attn_weights, p=dropout, train=module.training)
-    
-    # Apply attention weights to the value states
-    # Output shape: (bsz, num_attention_heads, seq_len, attention_head_dim)
-    attn_values = torch.einsum("bhis,bhsj->bhij", attn_weights, v_states)
-    attn_values = attn_values.transpose(1, 2).contiguous()
-    return attn_values, attn_weights    
-
-
-ATTENTION: dict[str, Callable] = {
-    'eager': eager_attn,
-    'sdpa': sdpa_attention_forward,
-}
-
-
-class MyLLMRotaryEmbedding(nn.Module):
-    
-    def __init__(self, dim: int, max_seq_len: int = 32768, theta: float = 10000.0) -> None: 
-        super().__init__()
-        self.theta = theta
-        self.hidden_size = dim
-        self.max_seq_len = max_seq_len
-        
-        # Initialize the rotary position embedding
-        inv_freq = 1 / (self.theta ** (torch.arange(0, self.hidden_size, 2) / self.hidden_size))
-        # Register buffer
-        self.register_buffer("inv_freq", inv_freq)
-    
-    @torch.no_grad()
-    def compute_pos_emb(self, ids: torch.Tensor) -> torch.Tensor:
-        # Record the bsz, seq_len, hidden_size
-        bsz, seq_len = ids.shape
-        # Compute the sinusoidal position encoding, output shape: (bsz, seq_len, hidden_size // 2)
-        sinusoid_inp = torch.einsum("bi,j->bij", ids.float(), self.inv_freq)
-        # Convert to polar coordinates, output shape: (bsz, 1, hidden_size // 2, 1)
-        pos_emb = torch.polar(torch.ones_like(sinusoid_inp), sinusoid_inp)
-        return pos_emb.view(bsz, 1, seq_len, -1)
-    
-    @torch.no_grad()
-    def apply_pos_emb(self, x: torch.Tensor, pos_emb: torch.Tensor) -> torch.Tensor:
-        # Record the bsz, n, seq_len, hidden_size
-        _, n, seq_len, hidden_size = x.shape
-        # View the input tensor as (bsz, n, seq_len, hidden_size // 2, 2) and cast to complex numbers
-        x = torch.view_as_complex(x.view(-1, n, seq_len, hidden_size // 2, 2))
-        # Apply the rotation
-        x = x * pos_emb
-        # Convert back to real numbers and view as (bsz, seq_len, hidden_size)
-        x = torch.view_as_real(x).view(-1, n, seq_len, hidden_size)
-        return x
-    
-    @torch.no_grad()
-    def forward(self, x: torch.Tensor, ids: torch.Tensor = None, pos_emb: torch.Tensor = None) -> torch.Tensor:
-        if pos_emb is None and ids is not None:
-            pos_emb = self.compute_pos_emb(ids)
-            
-        # Compute as complex numbers
-        x = self.apply_pos_emb(x, pos_emb)
-        return x
-
-
-class MyLLMRMSNorm(nn.Module):
-    
-    def __init__(self, dim: int, eps: float = 1e-6) -> None: 
-        super().__init__()
-        self.dim = dim
-        self.eps = eps
-        self.gamma = nn.Parameter(torch.ones(dim))
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Record dtype of the input tensor
-        input_type = x.dtype
-        # Cast the input tensor to float32
-        x = x.float()
-        # Compute the root mean square
-        x_rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        # Normalize the input tensor
-        x = x * x_rms
-        # Scale the tensor
-        x = x * self.gamma
-        return x.to(input_type)
-    
-    
-class MyLLMSwiGLU(nn.Module):
-    
-    def __init__(self, dim: int) -> None: 
-        super().__init__()
-        self.dim = dim
-        self.sigmoid = nn.Sigmoid()
-        self.w = nn.Linear(self.dim, self.dim)
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x * self.sigmoid(x) * self.w(x)
-        return x
-    
-
-class MyLLMForward(nn.Module):
-    
-    def __init__(self, config: MyLLMConfig, layer_idx: int, debug: bool = False) -> None: 
-        super().__init__()
-        self.config = config
-        self.layer_idx = layer_idx
-        self.debug = debug
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
-        
-        self.up = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.gate = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.up_act = nn.SiLU()
-        
-        # If debug is enabled, register the hook
-        if self.debug:
-            self.up.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="up"))
-            self.gate.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="gate"))
-            self.down.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="down"))
-            self.up_act.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="up_act"))
-            # self.down_act.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="down_act"))
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor: 
-        out = self.down(self.up_act(self.up(x) * self.gate(x)))
-        return out
-
-
-class MyLLMGroupAttention(nn.Module):
-    
-    def __init__(self, config: MyLLMConfig, layer_idx: int, debug: bool = False) -> None:
-        super().__init__()
-        self.config = config
-        self.layer_idx = layer_idx
-        self.debug = debug
-        
-        self.hidden_size = config.hidden_size
-        self.num_attention_heads = config.num_attention_heads
-        self.num_key_value_heads = config.num_key_value_heads
-        self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
-        self.head_dim = getattr(config, 'attention_head_dim', self.hidden_size // self.num_attention_heads)
-        self.scaling = self.head_dim ** -0.5
-        self.dropout = config.dropout
-        
-        self.q_proj = nn.Linear(self.hidden_size, self.head_dim * self.num_attention_heads, bias=True)
-        self.k_proj = nn.Linear(self.hidden_size, self.head_dim * self.num_key_value_heads, bias=True)
-        self.v_proj = nn.Linear(self.hidden_size, self.head_dim * self.num_key_value_heads, bias=True)
-        self.o_proj = nn.Linear(self.num_attention_heads * self.head_dim, self.hidden_size, bias=False)
-        
-        # If debug is enabled, register the hook
-        if self.debug:
-            self.q_proj.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="q_proj"))
-            self.k_proj.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="k_proj"))
-            self.v_proj.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="v_proj"))
-            self.o_proj.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="o_proj"))
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor, 
-        attention_mask: torch.Tensor, 
-        position_embeddings: torch.Tensor, 
-        past_key_value: Cache = None, 
-        cache_position: torch.LongTensor = None, 
-        **kwargs
-    ) -> tuple[torch.Tensor | None]: 
-        r"""Attention is all you need. This method take the following steps:
-        1. Compute the query, key, and value states
-        2. Apply the position embeddings
-        3. Repeat the key and value states to match the number of attention heads
-        4. View the key and value states as (bsz, num_attention_heads, seq_len, attention_head_dim)
-        
-        Args: 
-            hidden_states (torch.Tensor): 
-                The hidden states with shape (bsz, seq_len, hidden_size)
-            attention_mask (torch.Tensor):
-                The attention mask with shape (bsz, 1, seq_len, seq_len)
-            position_embeddings (torch.Tensor): 
-                The position embeddings with shape (bsz, seq_len, hidden_size)
-            past_key_value (Cache): 
-                The past key value cache
-            cache_position (torch.LongTensor): 
-                The cache position tensor. 
-        
-        Returns:
-            tuple[torch.Tensor | None]: 
-                The output tensor and the attention weights.
-        """
-        # Input shape: (bsz, seq_len, hidden_size)
-        input_shape = hidden_states.shape[:-1]
-        # Hidden shape: (bsz, seq_len, n, attention_head_dim)
-        hidden_shape = (*input_shape, -1, self.head_dim)
-        bsz, seq_len, n, dim = hidden_shape
-        
-        # Compute the query, key, and value
-        # Output shape: (bsz, seq_len, num_attention_heads, attention_head_dim)
-        q_states: torch.Tensor = self.q_proj(hidden_states).view(hidden_shape)
-        # Output shape: (bsz, seq_len, num_key_value_heads, attention_head_dim)
-        k_states: torch.Tensor = self.k_proj(hidden_states).view(hidden_shape)
-        # Output shape: (bsz, seq_len, num_key_value_heads, attention_head_dim)
-        v_states: torch.Tensor = self.v_proj(hidden_states).view(hidden_shape)
-        
-        # Transpose the query, key and value states to (bsz, n, seq_len, attention_head_dim)
-        q_states = q_states.transpose(1, 2)
-        k_states = k_states.transpose(1, 2)
-        v_states = v_states.transpose(1, 2)
-        
-        # Apply the position embeddings
-        q_states = q_states * position_embeddings
-        k_states = k_states * position_embeddings
-        
-        # If Cache is provided, update the key and value states
-        if past_key_value is not None:
-            # TODO: Learn how to implement this
-            raise NotImplementedError("Cache is not implemented yet.")
-        
-        # Get attention implementation
-        attn_impl = ATTENTION[self.config._attn_implementation]
-        # Check if the output attentions is enabled
-        if self.config._attn_implementation != 'eager':
-            if self.config._attn_implementation == 'sdpa' and kwargs.get('output_attentions', False):
-                warnings.warn("The output_attentions argument is not supported for the sdpa implementation. Falling back to eager implementation.")
-                attn_impl = eager_attn
-        
-        is_causal = True if attention_mask is None else False
-        
-        # Apply the attention
-        attn_out, attn_weights = attn_impl(
-            self, 
-            q_states, 
-            k_states, 
-            v_states, 
-            attention_mask, 
-            self.dropout if self.training else 0.0, 
-            self.scaling, 
-            is_causal, 
-        )
-        
-        # Transpose the attention output to (bsz, seq_len, n * attention_head_dim)
-        attn_out = attn_out.reshape(*input_shape, -1)
-        # Apply the output linear layer
-        attn_out = self.o_proj(attn_out)
-        return attn_out, attn_weights
+from models.configuration import MyLLMConfig, MyLLMConfigForMoE
+from models.rope import MyLLMRotaryEmbedding
+from models.ffn import MyLLMFFN
+from models.moe import MyLLMFFNMoE
+from models.norm import MyLLMRMSNorm
+from models.attention import MyLLMGroupAttention
+from utils.hooks import check_nan
 
 
 class MyLLMDecoderLayer(nn.Module):
@@ -318,9 +32,14 @@ class MyLLMDecoderLayer(nn.Module):
         self.debug = debug
         
         self.attn = MyLLMGroupAttention(config, layer_idx=layer_idx, debug=debug)
-        self.ffn = MyLLMForward(config, layer_idx, debug)
         self.input_norm = MyLLMRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.output_norm = MyLLMRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        
+        # Check type of Feed Forward Network
+        if config.use_moe and config.moe_type == "ffn":
+            self.ffn = MyLLMFFNMoE(config, layer_idx, debug)
+        else:
+            self.ffn = MyLLMFFN(config, layer_idx, debug)
         
         # If debug is enabled, register the hook
         if self.debug:
@@ -332,9 +51,12 @@ class MyLLMDecoderLayer(nn.Module):
         hidden_states: torch.Tensor, 
         attention_mask: torch.Tensor, 
         position_embeddings: torch.Tensor, 
+        # Output arguments
         output_attentions: bool = False, 
+        # Cache arguments
         past_key_value: Cache = None, 
         cache_position: torch.LongTensor = None, 
+        **kwargs: dict, 
     ) -> tuple[torch.Tensor]:
         # Record the hidden states
         residual = hidden_states
@@ -372,11 +94,11 @@ class MyLLMPreTrainedModel(PreTrainedModel):
     
     config_class = MyLLMConfig
     base_model_prefix = "myllm" 
-    supports_gradient_checkpointing = False     # TODO: Implement gradient checkpointing
+    supports_gradient_checkpointing = True
     _no_split_modules = ["MyLLMDecoderLayer"]
     _supports_sdpa = True
     _supports_flash_attn_2 = False
-    _supports_cache_class = False
+    _supports_cache_class = True
     _supports_static_cache = False
 
     def _init_weights(self, module: nn.Module) -> None:
@@ -399,6 +121,7 @@ class MyLLMModel(MyLLMPreTrainedModel):
         super().__init__(config)
         self.config = config
         self.debug = debug
+        self.gradient_checkpointing = getattr(config, "gradient_checkpointing", False)
         
         # Initialize embeddings
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size) 
@@ -410,8 +133,9 @@ class MyLLMModel(MyLLMPreTrainedModel):
         
         # Initialize other necessary components
         self.norm = MyLLMRMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.rotary_emb = MyLLMRotaryEmbedding(config.attention_head_dim, config.max_position_embeddings, config.rope_theta)
-        self.gradient_checkpointing = None  # TODO: Implement gradient checkpointing
+        self.rotary_emb = MyLLMRotaryEmbedding(
+            config.attention_head_dim, config.max_position_embeddings, config.rope_theta
+        )
         
         # If debug is enabled, register the hook
         if self.debug:
@@ -430,52 +154,53 @@ class MyLLMModel(MyLLMPreTrainedModel):
         
     def forward(
         self,
-        attention_mask: torch.Tensor, 
-        position_ids: torch.LongTensor, 
         input_ids: torch.LongTensor = None, 
         inputs_embeds: torch.FloatTensor = None, 
+        position_ids: torch.LongTensor = None, 
+        attention_mask: torch.Tensor = None, 
         # Output arguments
-        use_cache: bool = False,                    # TODO: Not implemented yet
+        use_cache: bool = False,                    
         output_attentions: bool = False, 
         output_hidden_states: bool = False, 
         return_dict: bool = False, 
         # Cache arguments
-        past_key_values: Cache = None,              # TODO: Not implemented yet
-        cache_position: torch.LongTensor = None,    # TODO: Not implemented yet
+        past_key_values: Cache = None,              
+        cache_position: torch.LongTensor = None,    
     ) -> tuple | BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+        
+        if self.gradient_checkpointing and use_cache and self.training:
+            raise ValueError("Gradient checkpointing is not compatible with use_cache=True during training.")
         
         # Get the embeddings
         if inputs_embeds is None:
             hidden_states: torch.Tensor = self.embed_tokens(input_ids)
         else:
-            raise ValueError("Either input_ids or inputs_embeds should be provided.")
+            hidden_states = inputs_embeds
+        
+        # Record the shape of the hidden states
+        seq_len = hidden_states.size(1)
         
         # Container for all the hidden states and attentions
         all_hidden_states = ()
         all_attentions = () if output_attentions else None
         
-        # Record the shape of the hidden states
-        bsz, seq_len, _ = hidden_states.shape
-        
         # Create cache if not provided and cache is enabled
-        if use_cache:
-            raise NotImplementedError("Cache is not implemented yet.")
-        
-        # Compute the position embeddings
-        # If position cache is provided, update the position embeddings
-        if cache_position is not None:
-            # TODO: Learn how to implement this
-            raise NotImplementedError("Cache is not implemented yet.")
-        
-        # Create a ones-like states with shape of (1, 1, seq_len, attention_head_dim)
-        position_embeddings = torch.ones(1, 1, seq_len, self.config.attention_head_dim, device=hidden_states.device)
-        
-        # Apply the position embeddings
-        # Output shape: (bsz, seq_len, num_attention_heads, attention_head_dim)
-        position_embeddings = self.rotary_emb(position_embeddings, position_ids).to(hidden_states.dtype)
-        
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache()
+            
+        # Update the cache position
+        if cache_position is None:
+            past_kv_length = past_key_values.get_seq_length() if past_key_values is not None else 0
+            cache_position = torch.arange(
+                past_kv_length, past_kv_length + hidden_states.size(1), device=hidden_states.device
+            )
+            
+        if position_ids is None: 
+            position_ids = cache_position.unsqueeze(0)
+            
+        # Update the causal mask
         causal_mask = self._update_causal_mask(
             attention_mask, 
             input_tensor=hidden_states, 
@@ -484,11 +209,27 @@ class MyLLMModel(MyLLMPreTrainedModel):
             output_attentions=output_attentions, 
         )
         
+        # Create a ones-like states with shape of (1, 1, seq_len, attention_head_dim)
+        position_embeddings = torch.ones(
+            1, 1, seq_len, self.config.attention_head_dim, device=hidden_states.device
+        )
+        
+        # Apply the position embeddings
+        # Output shape: (bsz, seq_len, num_attention_heads, attention_head_dim)
+        position_embeddings = self.rotary_emb(position_embeddings, position_ids).to(hidden_states.dtype)
+        
         # Forward pass through the model layers
-        for idx, layer in enumerate(self.layers):
+        for layer in self.layers:
             # Check if the gradient checkpointing is enabled
             if self.gradient_checkpointing:
-                raise NotImplementedError("Gradient checkpointing is not implemented yet.")
+                layer_outputs = checkpoint(
+                    layer.__call__,     # If the `forward` method is passed, hooks will not be called
+                    hidden_states, 
+                    causal_mask, 
+                    position_embeddings, 
+                    output_attentions, 
+                    past_key_values, 
+                )
             else:
                 layer_outputs = layer(
                     hidden_states, 
@@ -524,45 +265,6 @@ class MyLLMModel(MyLLMPreTrainedModel):
             return output
         else:
             return output.to_tuple()
-        
-    def _prepare_4d_causal_mask(
-        self, 
-        attention_mask: torch.Tensor, 
-        dtype: torch.dtype, 
-        device: torch.device, 
-    ) -> torch.Tensor:
-        """Create a 4D causal mask for the attention mechanism. 
-        HF Implementation Reference: https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_attn_mask_utils.py
-        I'm not familiar about all the details of all methods of HF Implementation, so I just implemented the method that I need.
-        
-        Args:
-            attention_mask (torch.Tensor): 
-                The attention mask with shape (bsz, seq_len)
-            device (torch.device): 
-                The device of the attention mask needed to be converted to.
-                
-        Returns:
-            torch.Tensor: 
-                The 4D causal mask with shape (bsz, 1, seq_len, seq_len)
-        """
-        # Record the shape of the attention mask
-        bsz, seq_len = attention_mask.shape
-        
-        dtype_min = torch.finfo(dtype).min
-        
-        # Create a triangular mask with min values in the upper triangular part
-        # Output shape: (1, 1, seq_len, seq_len)
-        causal_mask = torch.triu(torch.full((seq_len, seq_len), dtype_min, device=device), diagonal=1)
-        causal_mask = causal_mask.view(1, 1, seq_len, seq_len).to(dtype)
-        # Convert the dims specified by the input attention_mask to -inf
-        attention_mask = attention_mask.view(bsz, 1, 1, seq_len)
-        # Reapeat the attention mask
-        attention_mask = attention_mask.repeat(1, 1, seq_len, 1)
-        # Convert the causal mask to min where the value of attention mask is -1
-        causal_mask = causal_mask.masked_fill(attention_mask == 0, dtype_min)
-        # Convert the causal mask to 0 if all of the values are min in a row
-        attention_mask = attention_mask.transpose(-1, -2)
-        return causal_mask * attention_mask
     
     def _update_causal_mask(
         self,
@@ -586,22 +288,109 @@ class MyLLMModel(MyLLMPreTrainedModel):
             output_attentions (bool): 
                 Whether to output attentions or not
         """
+        if self.config._attn_implementation == "flash_attention_2":
+            raise NotImplementedError("Flash Attention 2 is not implemented yet.")
+        
+        past_key_values_length = past_key_values.get_seq_length() if past_key_values is not None else 0
+        using_static_cache = isinstance(past_key_values, StaticCache)   # Static Cache and JIT Not Supported Yet
+        
+        # If non-padding inputs are provided, we can ignore the causal mask for the sdpa implementation
+        if self.config._attn_implementation == "sdpa" and not output_attentions:
+            if not using_static_cache: 
+                if AttentionMaskConverter._ignore_causal_mask_sdpa(
+                    attention_mask, 
+                    inputs_embeds=input_tensor, 
+                    past_key_values_length=past_key_values_length, 
+                    is_training=self.training, 
+                ):
+                    return None
+        
         dtype = input_tensor.dtype
         device = input_tensor.device
+        seq_len = input_tensor.size(1)
+        
+        if using_static_cache:
+            # Static cache is not supported yet
+            raise NotImplementedError("Static cache is not supported yet.")
         
         # Create the causal mask
-        causal_mask = self._prepare_4d_causal_mask(attention_mask, dtype, device)
+        causal_mask = self._prepare_4d_causal_mask_with_cache_position(
+            seq_len, 
+            key_len=past_key_values_length + seq_len, 
+            batch_size=input_tensor.size(0), 
+            dtype=dtype, 
+            device=device, 
+            cache_position=cache_position, 
+            attention_mask=attention_mask, 
+        )
+        return causal_mask
+        
+    @staticmethod
+    def _prepare_4d_causal_mask_with_cache_position(
+        query_len: int, 
+        key_len: int, 
+        batch_size: int, 
+        dtype: torch.dtype, 
+        device: torch.device, 
+        cache_position: torch.Tensor, 
+        attention_mask: torch.Tensor = None, 
+    ) -> torch.Tensor:
+        """Create a 4D causal mask for the attention mechanism. 
+        
+        Args:
+            query_len (`int`):
+                The length of the query tensor.
+            key_len (`int`): 
+                The length of the key tensor. 
+            batch_size (`int`): 
+                The batch size of the input tensor.
+            dtype (`torch.dtype`):
+                The data type of the input tensor.
+            device (`torch.device`):
+                The device of the input tensor. 
+            cache_position (`torch.Tensor`): 
+                The cache position tensor with shape (seq_len,)
+            attention_mask (`torch.Tensor`, *optional*):
+                The attention mask with shape (bsz, seq_len)
+                
+        Returns:
+            `torch.Tensor`: 
+                The 4D causal mask with shape (bsz, 1, query_len, key_len)
+        """
+        if attention_mask is not None and attention_mask.dim() == 4:
+            return attention_mask
+        
+        dtype_min = torch.finfo(dtype).min
+        
+        # Create a triangular mask with min values in the upper triangular part
+        # Output shape: (1, 1, query_len, key_len)
+        causal_mask = torch.full((query_len, key_len), dtype_min, dtype=dtype, device=device)
+        if query_len == key_len:
+            causal_mask = torch.triu(causal_mask, diagonal=1)
+        elif query_len > 1:
+            # If a new long query is added, and query length is greater than key length, the torch.triu will not work properly
+            causal_mask *= torch.arange(key_len, device=device) > cache_position.reshape(-1, 1)
+        causal_mask = causal_mask.view(1, 1, query_len, key_len).to(dtype)
+        causal_mask = causal_mask.repeat(batch_size, 1, 1, 1)
+        
+        if attention_mask is not None:
+            # Convert the dims specified by the input attention_mask to -inf
+            attention_mask = attention_mask[:, None, None, :]
+            # Repeat the attention mask
+            attention_mask = attention_mask.repeat(1, 1, query_len, 1)
+            # Convert the causal mask to min where the value of attention mask is -1
+            causal_mask = causal_mask.masked_fill(attention_mask == 0, dtype_min)
+            
+            if query_len == key_len:
+                # Convert the causal mask to 0 if all of the values are min in a row
+                attention_mask = attention_mask.transpose(-1, -2)
+                causal_mask = causal_mask * attention_mask
+            
         return causal_mask
     
     
 class MyLLMForCausalLM(MyLLMPreTrainedModel, GenerationMixin):
-    """MyLLMForCausalLM is a causal language model that predicts the next token in a sequence. 
-    
-    MyLLMForCausalLM has generative capabilities, as `prepare_inputs_for_generation` is explicitly overwritten. However, it doesn't directly inherit from `GenerationMixin`. 
-    From 👉v4.50👈 onwards, `PreTrainedModel` will NOT inherit from `GenerationMixin`, and this model will lose the ability to call `generate` and other related functions.
-    - If you're using `trust_remote_code=True`, you can get rid of this warning by loading the model with an auto class. See https://huggingface.co/docs/transformers/en/model_doc/auto#auto-classes
-    - If you are the owner of the model architecture code, please modify your model class such that it inherits from `GenerationMixin` (after `PreTrainedModel`, otherwise you'll get an exception).
-    """
+    """MyLLMForCausalLM is a causal language model that predicts the next token in a sequence. """
     
     def __init__(self, config: MyLLMConfig, debug: bool = False) -> None:
         super().__init__(config)
@@ -646,21 +435,21 @@ class MyLLMForCausalLM(MyLLMPreTrainedModel, GenerationMixin):
         
     def forward(
         self,
-        attention_mask: torch.Tensor, 
-        position_ids: torch.LongTensor, 
         input_ids: torch.LongTensor = None, 
         inputs_embeds: torch.FloatTensor = None, 
-        # Target arguments
+        position_ids: torch.LongTensor = None, 
+        attention_mask: torch.Tensor = None, 
+        # Training arguments
         labels: torch.LongTensor = None, 
         # Output arguments
-        use_cache: bool = None,                     # TODO: Not implemented yet
+        use_cache: bool = None,                     
         output_attentions: bool = None, 
         output_hidden_states: bool = None, 
         return_dict: bool = None, 
         num_logits_to_keep: int = 0, 
         # Cache arguments
-        past_key_values: Cache = None,              # TODO: Not implemented yet
-        cache_position: torch.LongTensor = None,    # TODO: Not implemented yet
+        past_key_values: Cache = None,              
+        cache_position: torch.LongTensor = None,    
     ) -> tuple | CausalLMOutputWithPast:
         # Check if output_hidden_states is enabled
         output_hidden_states = output_hidden_states if output_hidden_states else self.config.output_hidden_states
@@ -691,12 +480,12 @@ class MyLLMForCausalLM(MyLLMPreTrainedModel, GenerationMixin):
         logits = logits.view(-1, self.vocab_size)                           # Output shape: (bsz * seq_len, vocab_size)
         
         # Mask the logits and labels, we do not update the padding tokens
-        logits = logits[attention_mask.view(-1)]
-        labels = labels.view(-1)[attention_mask.view(-1)]
+        # logits = logits[attention_mask.view(-1)]
+        # labels = labels.view(-1)[attention_mask.view(-1)]
         
         # Compute loss if labels are provided
         if labels is not None:
-            loss = self.loss_fn(logits, labels)
+            loss = self.loss_fn(logits, labels.view(-1))
         else:
             loss = None
             
@@ -713,23 +502,4 @@ class MyLLMForCausalLM(MyLLMPreTrainedModel, GenerationMixin):
             return outputs
         else:
             return outputs.to_tuple()
-        
-    def prepare_inputs_for_generation(
-        self,
-        attention_mask: torch.Tensor, 
-        position_ids: torch.LongTensor, 
-        input_ids: torch.LongTensor = None, 
-        inputs_embeds: torch.FloatTensor = None, 
-        # Target arguments
-        labels: torch.LongTensor = None, 
-        # Output arguments
-        use_cache: bool = None,                     # TODO: Not implemented yet
-        output_attentions: bool = None, 
-        output_hidden_states: bool = None, 
-        return_dict: bool = None, 
-        # Cache arguments
-        past_key_values: Cache = None,              # TODO: Not implemented yet
-        cache_position: torch.LongTensor = None,    # TODO: Not implemented yet
-    ) -> dict:
-        raise NotImplementedError("Prepare inputs for generation is not implemented yet.")
         

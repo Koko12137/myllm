@@ -5,8 +5,8 @@ import torch
 import pyarrow.parquet as pq
 from transformers import AutoTokenizer, TrainingArguments, Trainer
 
-from models.configuration import MyLLMConfig
 from models.modeling import MyLLMForCausalLM
+from models.configuration import MyLLMConfigForMoE
 from utils.dataset import PretrainDataset
 from utils.io import io_operation
 
@@ -34,24 +34,21 @@ def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     return {'input_ids': xs, 'labels': ys, 'attention_mask': masks, 'position_ids': ids}
 
 
-def pretrain_model() -> None:
+def test_ffn_moe() -> None:
     # Set random seed
     torch.manual_seed(1234)
     
     # Read pretrain config from json file
     config = json.load(open('configs/pretrain.json'))
     
-    # IO operations
-    io_operation(config)
-    
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config['tokenizer'])
 
     # Setup Language Model Config
-    lm_config = MyLLMConfig(
+    lm_config = MyLLMConfigForMoE(
         num_hidden_layers=16, 
         hidden_size=1024, 
-        intermediate_size=2048, 
+        intermediate_size=512, 
         num_attention_heads=16, 
         attention_head_dim=128, 
         max_position_embeddings=512, 
@@ -59,8 +56,11 @@ def pretrain_model() -> None:
         num_key_value_heads=8, 
     )
     
+    # IO operations
+    io_operation(config)
+    
     # Initialize the model
-    model = MyLLMForCausalLM(lm_config, debug=False)
+    model = MyLLMForCausalLM(lm_config)
     
     # Print the trainable parameters
     print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M")
@@ -71,16 +71,15 @@ def pretrain_model() -> None:
         save_total_limit=1, 
         save_strategy='steps', 
         save_steps=200, 
-        output_dir=config['output'], 
+        output_dir=config['output'],
         # Training arguments
         do_train=True, 
         do_eval=False, 
-        warmup_ratio=0.1, 
-        warmup_steps=1000, 
+        max_grad_norm=1.0, 
         # Logging arguments
         logging_strategy='steps', 
         logging_steps=10, 
-        report_to='none', 
+        report_to='none',
         # Other arguments
         **config['training_args'], 
     )
@@ -99,9 +98,4 @@ def pretrain_model() -> None:
     
     # Train the model
     trainer.train()
-    
-    # Save the model, tokenizer and config
-    model.save_pretrained(config['output'])
-    lm_config.save_pretrained(config['output'])
-    tokenizer.save_pretrained(config['output'])
     

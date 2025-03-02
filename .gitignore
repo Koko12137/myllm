@@ -180,5 +180,4 @@ datasets/
 .vscode/
 
 # output
-output/
-qwen_output/
+*output*/

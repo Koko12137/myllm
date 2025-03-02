@@ -1,4 +1,4 @@
-# The file is copied from transformers qwen2 to do ablation experiments to investigate where the bugs are
+# The file is copied from transformers qwen2 to do replacement experiments to investigate where the bugs are
 
 #                🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨
 #           This file was automatically generated from src/transformers/models/qwen2/modular_qwen2.py.
