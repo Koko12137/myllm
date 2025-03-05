@@ -1,4 +1,12 @@
+from enum import Enum
+
 from transformers import PretrainedConfig
+
+
+class ValidMoE(Enum):
+    
+    FFN = "ffn"
+    FFN_SHARE = 'ffn_share'
 
 
 class MyLLMConfig(PretrainedConfig):
@@ -83,6 +91,8 @@ class MyLLMConfigForMoE(MyLLMConfig):
         self, 
         num_experts: int = 16, 
         topk_experts: int = 4, 
+        num_share_experts: int = 0, 
+        moe_type: str = "ffn", 
         **kwargs,
     ) -> None:
         """Initialize MyLLMConfigForMoE.
@@ -91,11 +101,31 @@ class MyLLMConfigForMoE(MyLLMConfig):
             num_experts (`int`, *optional*, defaults to 16): 
                 The number of experts in the model.
             topk_experts (`int`, *optional*, defaults to 4):
-                The number of top k experts to select.
+                The number of top k experts to select. 
+            num_share_experts (`int`, *optional*, defaults to 0):
+                The number of share experts, if 0 is set, then all experts are unique.
+            moe_type (`str`, *optional*, defaults to "ffn"):
+                The type of Mixture of Experts. 
         """
         super().__init__(**kwargs)
         self.num_experts = num_experts
         self.topk_experts = topk_experts
+        self.num_share_experts = num_share_experts
+        self.moe_type = ValidMoE(moe_type)
         self.use_moe = True
-        self.moe_type = kwargs.get('moe_type', 'ffn')
+        
+        
+class MyLLMConfigForCoE(MyLLMConfigForMoE):
+    r"""The configuration class for MyLLM with Chain of Experts."""
+    model_type = "myllm_coe"
+    
+    def __init__(
+        self, 
+        num_chains: int = 2, 
+        residual: bool = True, 
+        **kwargs, 
+    ) -> None:
+        super().__init__(**kwargs)
+        self.num_chains = num_chains
+        self.residual = residual
         

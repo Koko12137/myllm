@@ -4,17 +4,20 @@
 
 ## 更新日志
 
-- [2025.2.13]
-完成Tokenizer训练，Debug跑通基础模型
+- [2025.3.5]
+修改MoE，增加共享专家支持，增加[Chain of Experts](https://github.com/ZihanWang314/CoE/tree/main)支持
 
-- [2025.2.15]
-修复PretrainDataset在生成labels时会比input_ids多一个的问题，增加对SDPA实现的FlashAttention支持
+- [2025.3.4]
+更新学习计划，将任务进行分类；
 
 - [2025.3.2]
 增加了对DynamicKVCache的支持；增加了对FFN MoE的支持；将原模型文件按照不同模块进行拆分；完成了基于SDPA实现的模型训练，但是发现似乎收敛难度有点大，再做个对比实验看看是不是学习率调度器的问题
 
-- [2025.3.4]
-更新学习计划，将任务进行分类；
+- [2025.2.15]
+修复PretrainDataset在生成labels时会比input_ids多一个的问题，增加对SDPA实现的FlashAttention支持
+
+- [2025.2.13]
+完成Tokenizer训练，Debug跑通基础模型
 
 ## TODO List
 
@@ -92,7 +95,9 @@
 
 3. [2025.2.15] Padding token的嵌入应该随着模型的更新而更新吗？
 
-   [2025.2.16] 看了一下Qwen2ForCausalLM的embed_tokens对应的padding嵌入，并不为0向量
+   [2025.2.16] 看了一下Qwen2ForCausalLM的embed_tokens对应的padding嵌入，并不为0向量，而在初始化时，padding是全0向量
+
+   [2025.3.5] 之前手动把padding在反向传播时mask掉会造成不稳定，可能的原因参考视频[Bilibili 良睦路程序员：transformers一个非常严重的bug——在使用梯度累计的时候 loss不等效](https://www.bilibili.com/video/BV1oY1aYzEVi)，具体原因待调查
 
 4. [2025.2.15] 直接修改eager_attn为sdpa在训练过程中出现了nan值
 
