@@ -1,0 +1,5 @@
+{
+    "dataset": "/workspace/cache/modelscope/datasets/BAAI/IndustryCorpus2", 
+    "output": "/workspace/koko/myllm/datasets/BAAI/IndustryCorpus2", 
+    "n_jobs": 40
+}

@@ -1,3 +1,4 @@
+import os
 import json
 import warnings
 
@@ -7,31 +8,12 @@ from transformers import AutoTokenizer, TrainingArguments, Trainer
 
 from models.configuration import MyLLMConfig
 from models.modeling import MyLLMForCausalLM
-from utils.dataset import PretrainDataset
+from utils.dataset import MyLLMPreTrainDataset, MyLLMPreTrainCollator
 from utils.io import io_operation
+from utils.inspect import model_inspect
 
 
 warnings.filterwarnings('ignore')
-
-
-def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
-    xs = []
-    ys = []
-    masks = []
-    for sample in batch:
-        xs.append(sample['input_ids'])
-        ys.append(sample['labels'])
-        masks.append(sample['attention_mask'])
-        
-    # Concatenate the samples
-    xs = torch.cat(xs, dim=0)
-    ys = torch.cat(ys, dim=0)
-    masks = torch.cat(masks, dim=0)
-    # Create ids
-    ids = torch.range(0, xs.size(1) - 1, dtype=torch.long).unsqueeze(0)
-    # Repeat ids
-    ids = ids.repeat(xs.size(0), 1)
-    return {'input_ids': xs, 'labels': ys, 'attention_mask': masks, 'position_ids': ids}
 
 
 def pretrain_model() -> None:
@@ -39,44 +21,37 @@ def pretrain_model() -> None:
     torch.manual_seed(1234)
     
     # Read pretrain config from json file
-    config = json.load(open('configs/pretrain.json'))
+    config: dict = json.load(open('configs/pretrain.json'))
     
     # IO operations
     io_operation(config)
     
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config['tokenizer'])
+    tokenizer = AutoTokenizer.from_pretrained(
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", 
+        local_files_only=True, 
+    )
 
     # Setup Language Model Config
     lm_config = MyLLMConfig(
-        num_hidden_layers=16, 
-        hidden_size=1024, 
-        intermediate_size=2048, 
-        num_attention_heads=16, 
-        attention_head_dim=128, 
-        max_position_embeddings=512, 
-        vocab_size=tokenizer.vocab_size, 
-        num_key_value_heads=8, 
+        vocab_size=len(tokenizer.vocab),        # FIXED: vocab_size of qwen2 is 151643, however the len(tokenizer.vocab_size) is 151665, this will cause error when indexing the embedding
+        ignore_index=tokenizer.pad_token_id, 
+        num_logits_to_keep=100, 
     )
     
     # Initialize the model
     model = MyLLMForCausalLM(lm_config, debug=False)
-    
-    # Print the trainable parameters
-    print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M")
-    print(model)
+    model_inspect(model)
     
     # Setup training arguments
     training_args = TrainingArguments(
-        save_total_limit=1, 
+        save_total_limit=2, 
         save_strategy='steps', 
-        save_steps=200, 
+        save_steps=500, 
         output_dir=config['output'], 
         # Training arguments
         do_train=True, 
         do_eval=False, 
-        warmup_ratio=0.1, 
-        warmup_steps=1000, 
         # Logging arguments
         logging_strategy='steps', 
         logging_steps=10, 
@@ -86,15 +61,15 @@ def pretrain_model() -> None:
     )
     
     # Load dataset
-    table = pq.read_table(config['dataset'])
-    train_ds = PretrainDataset(table, tokenizer, max_length=lm_config.max_position_embeddings)
+    train_ds = MyLLMPreTrainDataset(config['dataset'])
     
+    collator = MyLLMPreTrainCollator(tokenizer, padding_side='left')
     # Initialize the trainer
     trainer = Trainer(
         model=model, 
         args=training_args, 
         train_dataset=train_ds, 
-        data_collator=collate_fn, 
+        data_collator=collator, 
     )
     
     # Train the model

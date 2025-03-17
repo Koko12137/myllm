@@ -47,7 +47,10 @@ def eval_tokenizer(config: dict) -> None:
     print("The length of the template before and after tokenization is the same.")
     
 
-def train_tokenizer(config: dict) -> None:
+def train_tokenizer() -> None:
+    # Read tokenizer config from json file
+    config = json.load(open('configs/tokenizer.json'))
+    
     # Set random seed
     random.seed(1234)
     
@@ -65,7 +68,7 @@ def train_tokenizer(config: dict) -> None:
     # Initialize the tokenizer
     tokenizer = Tokenizer(models.BPE())
     # Initialize the pre-tokenizer
-    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel()
+    tokenizer.pre_tokenizer = pre_tokenizers.UnicodeScripts()
     
     # Set special tokens
     special_tokens = [
@@ -75,13 +78,13 @@ def train_tokenizer(config: dict) -> None:
     # Initialize the trainer
     trainer = trainers.BpeTrainer(
         vocab_size=vocab_size, 
+        min_frequency=2,
         special_tokens=special_tokens, 
         show_progress=True, 
-        initial_alphabet=pre_tokenizers.ByteLevel.alphabet(), 
     )
     
     # Initialize the decoder
-    tokenizer.decoder = decoders.ByteLevel()
+    tokenizer.decoder = decoders.BPEDecoder()
     
     # Load the corpus
     corpus = load_jsonl(corpus_file)

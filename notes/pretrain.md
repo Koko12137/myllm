@@ -25,6 +25,7 @@
 **②** Debug Qwen2模型推理过程，对模型文件进行修改，增加对SDPA的支持
 
 1. 关注GenerationMixin做的n件事
+
    1. 生成position_ids和cache_position等
       - position_ids：在GenerationMixin.prepare_inputs_for_generation里被生成，由attention_mask前向累加得到，并在模型计算rotary_embedding时使用
       - cache_position：在GenerationMixin._get_initial_cache_position里被生成，并被past_key_values_length截断，在模型生成causal_mask和记录静态Cache时被使用
@@ -55,17 +56,17 @@
 
 1. SDPA实现的预训练结果
 
-![SDPA](../assets/sdpa.png)
+   ![SDPA](../assets/sdpa.png)
 
-模型的预训练结果似乎没有Eager实现的效果好，得找找原因，测试模型加入一下计划，目前怀疑是没有使用warmup学习率调度的原因，OneCycle可能会在训练初期由于学习率过高使得模型进入局部最优
+   模型的预训练结果似乎没有Eager实现的效果好，得找找原因，测试模型加入一下计划，目前怀疑是没有使用warmup学习率调度的原因，OneCycle可能会在训练初期由于学习率过高使得模型进入局部最优
 
 2. Cache
 
-  PyTorch 支持的Cache类型有好几种，比较常用的是DynamicCache和StaticCache。DynamicCache在非编译情况下使用，不限制缓存大小。StaticCache固定缓存大小，主要与compile配合使用。
-  Cache主要用在推理的non-prefilling阶段。在prefilling阶段，模型会计算n query长度和m key长度的attention结果，然后更新到Cache中，这里的时间复杂度是O(n*m)，然后在推理的Non-Prefilling阶段，每次的query长度为1，时间复杂度下降为O(m)
+   PyTorch 支持的Cache类型有好几种，比较常用的是DynamicCache和StaticCache。DynamicCache在非编译情况下使用，不限制缓存大小。StaticCache固定缓存大小，主要与compile配合使用。
+   Cache主要用在推理的non-prefilling阶段。在prefilling阶段，模型会计算n query长度和m key长度的attention结果，然后更新到Cache中，这里的时间复杂度是O(n*m)，然后在推理的Non-Prefilling阶段，每次的query长度为1，时间复杂度下降为O(m)
 
 3. Forward MoE
 
-  总感觉FFN MoE的按照词的粒度来分配专家有点怪
+   总感觉FFN MoE的按照词的粒度来分配专家有点怪
 
-  Deepspeed文档里有个[`deepspeed.moe.layer.MoE`](https://deepspeed.readthedocs.io/en/latest/moe.html)，有空看看什么回事
+   Deepspeed文档里有个[`deepspeed.moe.layer.MoE`](https://deepspeed.readthedocs.io/en/latest/moe.html)，有空看看什么回事

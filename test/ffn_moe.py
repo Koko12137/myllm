@@ -6,8 +6,8 @@ import pyarrow.parquet as pq
 from transformers import AutoTokenizer, TrainingArguments, Trainer
 
 from models.modeling import MyLLMForCausalLM
-from models.configuration import MyLLMConfigForMoE
-from utils.dataset import PretrainDataset
+from models.configuration import MyLLMConfig
+from utils.dataset import MyLLMPreTrainDataset
 from utils.io import io_operation
 
 
@@ -45,10 +45,10 @@ def test_ffn_moe() -> None:
     tokenizer = AutoTokenizer.from_pretrained(config['tokenizer'])
 
     # Setup Language Model Config
-    lm_config = MyLLMConfigForMoE(
+    lm_config = MyLLMConfig(
         num_hidden_layers=16, 
         hidden_size=1024, 
-        intermediate_size=512, 
+        intermediate_size=2048, 
         num_attention_heads=16, 
         attention_head_dim=128, 
         max_position_embeddings=512, 
@@ -86,7 +86,7 @@ def test_ffn_moe() -> None:
     
     # Load dataset
     table = pq.read_table(config['dataset'])
-    train_ds = PretrainDataset(table, tokenizer, max_length=lm_config.max_position_embeddings)
+    train_ds = MyLLMPreTrainDataset(table, tokenizer, max_length=lm_config.max_position_embeddings)
     
     # Initialize the trainer
     trainer = Trainer(

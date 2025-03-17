@@ -10,17 +10,17 @@ from utils.hooks import check_nan
 
 class MyLLMFFN(nn.Module):
     
-    def __init__(self, config: MyLLMConfig, layer_idx: int, debug: bool = False) -> None: 
+    def __init__(self, in_channels: int, hidden_channels: int, out_channels: int, layer_idx: int, debug: bool = False) -> None: 
         super().__init__()
-        self.config = config
         self.layer_idx = layer_idx
         self.debug = debug
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
         
-        self.up = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.up_act = MyLLMSwiGLU(self.intermediate_size)
+        self.up = nn.Linear(self.in_channels, self.hidden_channels, bias=False)
+        self.down = nn.Linear(self.hidden_channels, self.out_channels, bias=False)
+        self.up_act = MyLLMSwiGLU(self.hidden_channels)
         
         # If debug is enabled, register the hook
         if self.debug:

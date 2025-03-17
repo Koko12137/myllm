@@ -13,10 +13,10 @@ from transformers.modeling_outputs import (
     CausalLMOutputWithPast, 
 )
 
-from models.configuration import MyLLMConfig, MyLLMConfigForMoE
+from models.configuration import MyLLMConfig
 from models.rope import MyLLMRotaryEmbedding
 from models.ffn import MyLLMFFN
-from models.moe import MyLLMFFNMoE
+from models.moe import MyLLMFFNMoE, MyLLMFFNCoE
 from models.norm import MyLLMRMSNorm
 from models.attention import MyLLMGroupAttention
 from utils.hooks import check_nan
@@ -32,19 +32,21 @@ class MyLLMDecoderLayer(nn.Module):
         self.debug = debug
         
         self.attn = MyLLMGroupAttention(config, layer_idx=layer_idx, debug=debug)
-        self.input_norm = MyLLMRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.output_norm = MyLLMRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.attn_norm = MyLLMRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.ffn_norm = MyLLMRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         
         # Check type of Feed Forward Network
-        if config.use_moe and config.moe_type == "ffn":
+        if config.use_coe and config.use_moe and config.moe_type == "ffn":
+            self.ffn = MyLLMFFNCoE(config, layer_idx, debug)
+        elif config.use_moe and config.moe_type == "ffn":
             self.ffn = MyLLMFFNMoE(config, layer_idx, debug)
         else:
-            self.ffn = MyLLMFFN(config, layer_idx, debug)
+            self.ffn = MyLLMFFN(config.hidden_size, config.intermediate_size, config.hidden_size, layer_idx, debug)
         
         # If debug is enabled, register the hook
         if self.debug:
-            self.input_norm.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="input_norm"))
-            self.output_norm.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="output_norm"))
+            self.attn_norm.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="input_norm"))
+            self.ffn_norm.register_full_backward_hook(partial(check_nan, layer_idx=layer_idx, name="output_norm"))
         
     def forward(
         self,
@@ -61,9 +63,6 @@ class MyLLMDecoderLayer(nn.Module):
         # Record the hidden states
         residual = hidden_states
         
-        # Normalize the input
-        hidden_states = self.input_norm(hidden_states)
-        
         # Self-Attention
         hidden_states, attn_weights = self.attn(
             hidden_states, 
@@ -73,16 +72,26 @@ class MyLLMDecoderLayer(nn.Module):
             past_key_value=past_key_value, 
             cache_position=cache_position, 
         )
-        # Set hidden states to residual
-        hidden_states = hidden_states + residual
+        # Normalize the hidden_states
+        hidden_states = self.attn_norm(hidden_states + residual)
         
-        residual = hidden_states
-        # Normalize the output
-        hidden_states = self.output_norm(hidden_states)
+        # Residual
+        if not self.config.use_moe:
+            residual = hidden_states
+        elif self.config.use_moe and not self.config.residual:
+            residual = hidden_states
+        
         # Feed Forward Network
         hidden_states = self.ffn(hidden_states)
-        # Add the residual
-        hidden_states = hidden_states + residual
+        
+        # Apply residual, if model type is CoE and residual is True, then it will be executed in CoE
+        if not self.config.use_coe:
+            hidden_states = hidden_states + residual
+        elif self.config.use_coe and not self.config.residual:
+            hidden_states = hidden_states + residual
+        
+        # Normalize the output
+        hidden_states = self.ffn_norm(hidden_states)
         
         outputs = (hidden_states,) 
         if output_attentions:
@@ -193,8 +202,8 @@ class MyLLMModel(MyLLMPreTrainedModel):
         # Update the cache position
         if cache_position is None:
             past_kv_length = past_key_values.get_seq_length() if past_key_values is not None else 0
-            cache_position = torch.arange(
-                past_kv_length, past_kv_length + hidden_states.size(1), device=hidden_states.device
+            cache_position = torch.tensor(
+                range(past_kv_length, past_kv_length + hidden_states.size(1)), device=hidden_states.device
             )
             
         if position_ids is None: 
@@ -406,7 +415,7 @@ class MyLLMForCausalLM(MyLLMPreTrainedModel, GenerationMixin):
         
         # Initialize the loss function
         # TODO: add support for balance moe loss
-        self.loss_fn = nn.CrossEntropyLoss()
+        self.loss_fn = nn.CrossEntropyLoss(ignore_index=self.config.ignore_index)
         
         # If debug is enabled, register the hook
         if self.debug:

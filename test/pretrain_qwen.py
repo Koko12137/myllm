@@ -8,7 +8,7 @@ from transformers import (
 )
 
 from test.modeling_qwen import Qwen2ForCausalLM
-from utils.dataset import PretrainDataset
+from utils.dataset import MyLLMPreTrainDataset
 from utils.io import io_operation
 
 
@@ -87,7 +87,7 @@ def pretrain_model() -> None:
     
     # Load dataset
     table = pq.read_table(config['dataset'])
-    train_ds = PretrainDataset(table, tokenizer, max_length=lm_config.max_position_embeddings)
+    train_ds = MyLLMPreTrainDataset(table, tokenizer, max_length=lm_config.max_position_embeddings)
     
     # Initialize the trainer
     trainer = Trainer(
