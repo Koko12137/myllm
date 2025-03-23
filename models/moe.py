@@ -1,4 +1,3 @@
-import random
 from functools import partial
 
 import torch
@@ -130,11 +129,11 @@ class MyLLMFFNMoE(nn.Module):
         ids = ids.view(-1, ids.size(-1))            # Shape: (bsz * seq_len, topk_experts)
         
         # Create a zero tensor with the same shape as x for the expert output
-        x = x.view(-1, x.size(-1))      # Shape: (bsz * seq_len, hidden_size)
-        zeros = torch.zeros_like(x)     # Shape: (bsz * seq_len, hidden_size)
+        x = x.view(-1, x.size(-1))                          # Shape: (bsz * seq_len, hidden_size)
+        zeros = torch.zeros_like(x, device=x.device)        # Shape: (bsz * seq_len, hidden_size)
         
         # Penalty for imbalance
-        penalty = torch.zeros_like(self.router.gate_bias)
+        penalty = torch.zeros_like(self.router.gate_bias, device=x.device)
         
         # Compute the expert output
         for i, expert in enumerate(self.experts):
@@ -232,13 +231,13 @@ class MyLLMFFNCoE(MyLLMFFNMoE):
             # Compute the expert gate
             # Shape: (bsz, seq_len, num_experts), (bsz, seq_len, topk_experts)
             logits, ids = router(x)
-            logits = logits.view(-1, logits.size(-1))   # Shape: (bsz * seq_len, num_experts)
-            ids = ids.view(-1, ids.size(-1))            # Shape: (bsz * seq_len, topk_experts)
+            logits = logits.view(-1, logits.size(-1))           # Shape: (bsz * seq_len, num_experts)
+            ids = ids.view(-1, ids.size(-1))                    # Shape: (bsz * seq_len, topk_experts)
             
-            zeros = torch.zeros_like(x)     # Shape: (bsz * seq_len, hidden_size)
+            zeros = torch.zeros_like(x, device=x.device)        # Shape: (bsz * seq_len, hidden_size)
             
             # Penalty for imbalance
-            penalty = torch.zeros_like(router.gate_bias)
+            penalty = torch.zeros_like(router.gate_bias, device=x.device)
             
             # Compute the expert output
             for i, expert in enumerate(self.experts):

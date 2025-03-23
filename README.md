@@ -4,6 +4,9 @@
 
 ## 更新日志
 
+- [2025.3.23]
+  对比实验发现直接CoE训练存在难以收敛问题；参照[阶跃星辰调参实验](https://arxiv.org/abs/2503.04715)将训练batch_size和学习率增大，预训练预计7天完成，计划将对困惑度进行测试，并增加上下文长度进行全量微调与模型蒸馏；参考[阅读笔记](./notes/reinforcement.md)完成数据合成（谨防**阿里云百炼大模型**的批量推理超出预算）
+
 - [2025.3.17]
   
   - BUG修复：
@@ -23,23 +26,27 @@
     训练MoE模型
 
 - [2025.3.5]
-修改MoE，增加共享专家支持，增加[Chain of Experts](https://github.com/ZihanWang314/CoE/tree/main)支持
+  修改MoE，增加共享专家支持，增加[Chain of Experts](https://github.com/ZihanWang314/CoE/tree/main)支持
 
 - [2025.3.4]
-更新学习计划，将任务进行分类；
+  更新学习计划，将任务进行分类；
 
 - [2025.3.2]
-增加了对DynamicKVCache的支持；增加了对FFN MoE的支持；将原模型文件按照不同模块进行拆分；完成了基于SDPA实现的模型训练，但是发现似乎收敛难度有点大，再做个对比实验看看是不是学习率调度器的问题
+  增加了对DynamicKVCache的支持；增加了对FFN MoE的支持；将原模型文件按照不同模块进行拆分；完成了基于SDPA实现的模型训练，但是发现似乎收敛难度有点大，再做个对比实验看看是不是学习率调度器的问题
 
 - [2025.2.15]
-修复PretrainDataset在生成labels时会比input_ids多一个的问题，增加对SDPA实现的FlashAttention支持
+  修复PretrainDataset在生成labels时会比input_ids多一个的问题，增加对SDPA实现的FlashAttention支持
 
 - [2025.2.13]
-完成Tokenizer训练，Debug跑通基础模型
+  完成Tokenizer训练，Debug跑通基础模型
 
 ## TODO List
 
 ### ✅ 已完成
+
+- 数据工程
+  - [x] 清洗预训练数据
+    - [2025.3.23] **在阿里云百炼平台提交了几个[数据合成](notebooks/1-data-compose.ipynb)的批量推理任务，运行完后被短信告知`欠费870元`，天塌了**
 
 - 训练
 
@@ -47,6 +54,7 @@
   - [x] [2025.2.13] 参考minimind复现大模型预训练，并参考qwen2和llama将实现迁移到HF的Transformers规范
   - [x] [2025.3.2] SDPA训练结果不太理想，估计是OneCycle调度器的问题，试试看修改一下重新训练
   - [x] [2025.3.13] 修改调度器为Warmup，但效果仍没有明显提升，推测是数据多元性的问题或者是学习率的问题
+  - [x] [2025.3.14] 将padding从Backward中剔除
 
 - 模型改进
 
@@ -70,25 +78,24 @@
 ### 🕥 进行中
 
 - [ ] [2025.3.2] 做数据做数据！！！！：
-  - [x] 清洗预训练数据
   - [ ] 找点免费的api，根据种子合成领域迁移数据以及短CoT数据，执行全量微调
 
 - [ ] [2025.3.5] 改进Attention机制以及引入MoE
-  - [ ] MoE专家负载均衡训练
-    - [ ] Block MoE
   - [ ] Kimi Mixture of Block Attention
     - Kimi MoBA具体实现方式是什么？会不会影响KVCache？
     - 切分QKV的时候能不能用一个低秩矩阵计算Q分块和K分块的相关值？
     - 能不能逐层对原序列长度进行缩减？让模型把一段内容读薄？
 
 - [ ] [2025.3.14] 训练
-  - [x] 将padding从Backward中剔除
-  - [ ] 训练MoE模型
-  - [ ] 加入教师模型，进行白盒蒸馏
+  - [ ] [2025.3.23] 训练MoE模型
+    - [ ] MoE专家负载均衡训练
+  - [ ] [2025.3.23] 对学习率、batch_size、CoE、MoE、Dense等参数进行对比实验
+  - [ ] 使用合成数据集与Deepseek-R1蒸馏数据集，加入教师模型，进行白盒蒸馏
     - [ ] Response-based 知识蒸馏
     - [ ] 部分中间层知识蒸馏，如Attention层对齐教师模型
 
 - [ ] 测试模型
+  - [ ] 困惑度测试
 
 ### 🗓 计划内
 
@@ -108,8 +115,9 @@
   
 - 模型改进
   - [ ] 对MoE、Attention进行花式修改
+    - [ ] Block MoE
     - [ ] 稀疏注意力与线性注意力
-    - [ ] Deepseek V3的MLA和MoE
+    - [ ] Deepseek V3的MLA
 
 - 工程化
   - [ ] 训练与推理加速工程
@@ -146,6 +154,12 @@
 4. [2025.3.4] MoE训练出现了问题，会莫名其妙卡在某个step然后一动不动，也不报任何bug
 
     [2025.3.17] 在MoE模型中，通过Top-K获取每个Token指定的专家，而在原来的代码中，当某些专家没有被任何Token激活时，其反向传播的梯度不存在，这样会造成在分布式执行all_gather时某些进程持续等待该部分梯度，造成死锁。参考[[BUG] The NCCL timed out while using the zero3 model. How can I solve this problem? #5066](https://github.com/deepspeedai/DeepSpeed/issues/5066)
+
+5. [2025.3.23] 训练设置了一个对照试验，实验对比`num_logits_to_keep`设置为100与不设置的区别，结果发现设置为100时训练过程极其不稳定，且收敛难度加大，推测原因如下：
+
+   - 在模型训练阶段，假设我们每个batch都只考虑最后一个输出token的loss，且每个batch的上下文不一致，则每个参数的梯度为所有batch的平均值；而如果我们考虑最后k个tokens的loss，在causal attention的前提下，单个batch中越靠前的token所造成的loss会被放得越大，使得模型难以聚焦到最后一个token的生成中，这造成了训练容易进入局部最优
+   - 训练时我们对数据集进行洗牌的目的在于尽可能保证每个sample不一样，避免进入局部最优状态，而在同一上下文中计算多个tokens的loss与这一做法的目的背道而驰，因此在训练时应该尽量避免这种情况
+   - 验证：使用钩子函数抓取每个batch的梯度，对比其均值和方差
 
 ## 📚 参考资料
 

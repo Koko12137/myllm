@@ -25,8 +25,8 @@ def process_clean(files: list[str], output: str) -> None:
             continue
         
         table: pd.DataFrame = pd.read_parquet(file)
-        # Discard the rows that length of `text` is less than 300 
-        table = table[table['text'].str.len() > 300]
+        # Discard the rows that length of `text` is less than 200 
+        table = table[table['text'].str.len() > 200]
         # Drop all the columns except `text`
         cols = table.columns.difference(['text'])
         table = table.drop(columns=cols)
@@ -141,7 +141,7 @@ def merge() -> None:
     pool = Pool(n)
     
     # Partial function to pass the output directory
-    process_fn = partial(process_merge, output=f"{config['output']}/merge", sample=100000, seed=SEED)
+    process_fn = partial(process_merge, output=f"{config['output']}/merge30k", sample=300000, seed=SEED)
     # Process the chunks
     data = pool.map_async(process_fn, industry.values())
     

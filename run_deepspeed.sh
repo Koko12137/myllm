@@ -1,1 +1,1 @@
-deepspeed --include="localhost:1,2,3,4,5" main.py
+/opt/conda/envs/llm/bin/deepspeed --include="localhost:2,3,4,5,6,7" main.py

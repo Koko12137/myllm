@@ -1,4 +1,3 @@
-import warnings
 from functools import partial
 
 import torch
@@ -414,8 +413,7 @@ class MyLLMForCausalLM(MyLLMPreTrainedModel, GenerationMixin):
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         
         # Initialize the loss function
-        # TODO: add support for balance moe loss
-        self.loss_fn = nn.CrossEntropyLoss(ignore_index=self.config.ignore_index)
+        self.loss_fn = nn.CrossEntropyLoss()
         
         # If debug is enabled, register the hook
         if self.debug:
@@ -493,7 +491,6 @@ class MyLLMForCausalLM(MyLLMPreTrainedModel, GenerationMixin):
         
         # Compute loss if labels are provided
         if labels is not None:
-            # TODO: add support for balance moe loss
             loss = self.loss_fn(logits, labels.view(-1))
         else:
             loss = None

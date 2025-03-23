@@ -1,11 +1,11 @@
 {
-    "dataset": "datasets/BAAI/IndustryCorpus2/merge", 
+    "dataset": "datasets/BAAI/IndustryCorpus2/merge30k", 
     "output": "output", 
     "replace": true, 
     "training_args": {
-        "per_device_train_batch_size": 24, 
-        "num_train_epochs": 5, 
-        "gradient_accumulation_steps": 1, 
+        "per_device_train_batch_size": 12, 
+        "num_train_epochs": 2, 
+        "gradient_accumulation_steps": 10, 
         "dataloader_num_workers": 10, 
         "dataloader_persistent_workers": true, 
         "use_cpu": false, 

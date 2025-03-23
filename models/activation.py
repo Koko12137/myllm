@@ -8,7 +8,7 @@ class MyLLMSwiGLU(nn.Module):
         super().__init__()
         self.dim = dim
         self.sigmoid = nn.Sigmoid()
-        self.w = nn.Linear(self.dim, self.dim)
+        self.w = nn.Linear(self.dim, self.dim, bias=False)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x * self.sigmoid(x) * self.w(x)
