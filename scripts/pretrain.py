@@ -1,9 +1,7 @@
-import os
 import json
 import warnings
 
 import torch
-import pyarrow.parquet as pq
 from transformers import AutoTokenizer, TrainingArguments, Trainer
 
 from models.configuration import MyLLMConfig
@@ -36,7 +34,7 @@ def pretrain_model() -> None:
     lm_config = MyLLMConfig(
         vocab_size=len(tokenizer.vocab),        # FIXED: vocab_size of qwen2 is 151643, however the len(tokenizer.vocab_size) is 151665, this will cause error when indexing the embedding
         ignore_index=tokenizer.pad_token_id, 
-        num_logits_to_keep=100, 
+        use_coe=False, 
     )
     
     # Initialize the model
@@ -54,7 +52,7 @@ def pretrain_model() -> None:
         do_eval=False, 
         # Logging arguments
         logging_strategy='steps', 
-        logging_steps=10, 
+        logging_steps=2, 
         report_to='none', 
         # Other arguments
         **config['training_args'], 

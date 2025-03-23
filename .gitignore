@@ -181,3 +181,7 @@ datasets/
 
 # output
 *output*/
+out*/
+
+# API-KEY
+*api_key*

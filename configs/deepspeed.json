@@ -1,5 +1,5 @@
 {
-    "train_micro_batch_size_per_gpu": 10,
+    "train_micro_batch_size_per_gpu": 12,
 
     "bfloat16": {
         "enabled": true
@@ -24,7 +24,7 @@
             "cycle_second_stair_count": 1000,
             "decay_step_size": 2000,
             "cycle_min_lr": 0.0001,
-            "cycle_max_lr": 0.0010,
+            "cycle_max_lr": 0.0005,
             "decay_lr_rate": 0.001,
             "cycle_min_mom": 0.85,
             "cycle_max_mom": 0.99,
@@ -35,10 +35,10 @@
     "zero_optimization": {
         "stage": 2,
         "allgather_partitions": true,
-        "allgather_bucket_size": 5e8,
+        "allgather_bucket_size": 1e9,
         "overlap_comm": true,
         "reduce_scatter": true,
-        "reduce_bucket_size": 5e8,
+        "reduce_bucket_size": 1e9,
         "contiguous_gradients": true
     }
 }

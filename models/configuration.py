@@ -16,16 +16,16 @@ class MyLLMConfig(PretrainedConfig):
         self, 
         vocab_size: int = 151665, 
         ignore_index: int = 151643, 
+        num_hidden_layers: int = 16, 
         # MLP Arguments
-        hidden_size: int = 512, 
-        intermediate_size: int = 768, 
+        hidden_size: int = 768, 
+        intermediate_size: int = 3840, 
         rms_norm_eps: float = 0.000001, 
         dropout: float = 0.1, 
         # Attention Arguments
-        num_hidden_layers: int = 32, 
-        num_attention_heads: int = 24, 
-        num_key_value_heads: int = 6, 
-        attention_head_dim: int = 64, 
+        num_attention_heads: int = 16, 
+        num_key_value_heads: int = 8, 
+        attention_head_dim: int = 128, 
         attn_implementation: str = "sdpa", 
         # Positional Embeddings Arguments
         max_position_embeddings: int = 32768,
@@ -38,7 +38,7 @@ class MyLLMConfig(PretrainedConfig):
         moe_type: str = "ffn", 
         num_experts: int = 32, 
         topk_experts: int = 2, 
-        num_share_experts: int = 1, 
+        num_share_experts: int = 2, 
         moe_dropout: float = 0.1, 
         expert_temperature: float = 1.0, 
         expert_sample: bool = False, 
@@ -57,23 +57,23 @@ class MyLLMConfig(PretrainedConfig):
                 The size of the vocabulary.
             ignore_index (`int`, *optional*, defaults to 151643): 
                 The ignore index for loss calculation.
+            num_hidden_layers (`int`, *optional*, defaults to 16):
+                The number of hidden layers in the model.
                 
-            hidden_size (`int`, *optional*, defaults to 512): 
+            hidden_size (`int`, *optional*, defaults to 768): 
                 The hidden size of the model.
-            intermediate_size (`int`, *optional*, defaults to 768): 
+            intermediate_size (`int`, *optional*, defaults to 3072): 
                 The intermediate size of the model. 
             rms_norm_eps (`float`, *optional*, defaults to 0.000001):
                 The epsilon value for RMSNorm.
             dropout (`float`, *optional*, defaults to 0.1):
                 The dropout rate.
                 
-            num_hidden_layers (`int`, *optional*, defaults to 32):
-                The number of hidden layers in the model.
-            num_attention_heads (`int`, *optional*, defaults to 24): 
+            num_attention_heads (`int`, *optional*, defaults to 16): 
                 The number of attention heads in the model. 
-            num_key_value_heads (`int`, *optional*, defaults to 6):
+            num_key_value_heads (`int`, *optional*, defaults to 8):
                 The number of key value heads in the model.
-            attention_head_dim (`int`, *optional*, defaults to 64):
+            attention_head_dim (`int`, *optional*, defaults to 128):
                 The dimension of the attention heads.
             attn_implementation (`str`, *optional*, defaults to "sdpa"):
                 The implementation of attention. 
