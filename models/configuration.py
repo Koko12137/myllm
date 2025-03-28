@@ -20,7 +20,6 @@ class MyLLMConfig(PretrainedConfig):
         # MLP Arguments
         hidden_size: int = 768, 
         intermediate_size: int = 3840, 
-        rms_norm_eps: float = 0.000001, 
         dropout: float = 0.1, 
         # Attention Arguments
         num_attention_heads: int = 16, 
@@ -28,8 +27,12 @@ class MyLLMConfig(PretrainedConfig):
         attention_head_dim: int = 128, 
         attn_implementation: str = "sdpa", 
         # Positional Embeddings Arguments
-        max_position_embeddings: int = 32768,
+        max_position_embeddings: int = 32768, 
         rope_theta: float = 10000.0, 
+        # Norm Arguments
+        norm_eps: float = 0.000001, 
+        norm_fn: str = "rms_norm", 
+        norm_scale: float = 1.42, 
         # Generation Arguments
         use_cache: bool = True, 
         max_length: int = 512, 
@@ -48,7 +51,7 @@ class MyLLMConfig(PretrainedConfig):
         use_coe: bool = True, 
         num_chains: int = 2, 
         residual: bool = True, 
-        **kwargs,
+        **kwargs, 
     ) -> None:
         r"""Initialize MyLLMConfig.
         
@@ -64,8 +67,6 @@ class MyLLMConfig(PretrainedConfig):
                 The hidden size of the model.
             intermediate_size (`int`, *optional*, defaults to 3072): 
                 The intermediate size of the model. 
-            rms_norm_eps (`float`, *optional*, defaults to 0.000001):
-                The epsilon value for RMSNorm.
             dropout (`float`, *optional*, defaults to 0.1):
                 The dropout rate.
                 
@@ -82,9 +83,18 @@ class MyLLMConfig(PretrainedConfig):
                 The maximum position embeddings.
             rope_theta (`float`, *optional*, defaults to 10000.0):
                 The theta value for ROPE. 
+            
+            norm_eps (`float`, *optional*, defaults to 0.000001):
+                The epsilon value for RMSNorm or LayerNorm.
+            norm_fn (`str`, *optional*, defaults to "rms_norm"): 
+                The normalization function to use. 
+            norm_scale (`float`, *optional*, defaults to 0.87): 
+                The scaling factor for residual connection. 
                 
             use_cache (`bool`, *optional*, defaults to True):
                 Whether to use cache for generation. 
+            max_length (`int`, *optional*, defaults to 512): 
+                The maximum length for generation. 
             
             use_moe (`bool`, *optional*, defaults to True): 
                 Whether to use Mixture of Experts. 
@@ -115,16 +125,16 @@ class MyLLMConfig(PretrainedConfig):
                 Whether to use residual connection in CoE. 
         """
         super().__init__(
-            attn_implementation=attn_implementation, **kwargs
+            attn_implementation=attn_implementation, 
+            **kwargs
         )
         self.vocab_size = vocab_size
-        self.dropout = dropout
         self.ignore_index = ignore_index
+        self.dropout = dropout
         
         # MLP Arguments
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
-        self.rms_norm_eps = rms_norm_eps
         
         # Attention Arguments
         self.num_hidden_layers = num_hidden_layers
@@ -135,6 +145,11 @@ class MyLLMConfig(PretrainedConfig):
         # Positional Embeddings Arguments
         self.max_position_embeddings = max_position_embeddings
         self.rope_theta = rope_theta
+        
+        # Normalization Arguments
+        self.norm_eps = norm_eps
+        self.norm_fn = norm_fn
+        self.norm_scale = norm_scale
         
         # Generation Arguments
         self.use_cache = use_cache
@@ -153,7 +168,7 @@ class MyLLMConfig(PretrainedConfig):
         self.expert_sample = expert_sample
         self.gate_random_alpha = gate_random_alpha
         self.balance_penalty = balance_penalty
-            
+        
         # Chain of Experts
         self.use_coe = use_coe
         if use_coe:

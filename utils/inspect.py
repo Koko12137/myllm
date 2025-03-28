@@ -21,6 +21,6 @@ def model_inspect(model: nn.Module) -> None:
     print(f"Core Trainable parameters without embeddings and head: {(p_core_counts - p_emb_counts - p_head_counts) / 1e6:.2f}M")
     
     # Check if the model is moe
-    if model.config.use_moe:
-        # Get the active parameters
-        pass    # TODO: extract the experts 
+    # if model.config.use_moe:
+    #     # Get the active parameters
+    #     pass    # TODO: extract the experts 

@@ -1,4 +1,5 @@
 import os
+from collections.abc import Sequence
 
 import torch
 import pyarrow as pa
@@ -7,10 +8,33 @@ from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 
 
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 
-class MyLLMPreTrainDataset(Dataset):
+class InMemoryDataset(Sequence, Dataset):
+    
+    def __init__(self, data: list) -> None:
+        super().__init__()
+        self.data = data
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __getitem__(self, idx: int) -> str:
+        return self.data[idx]
+    
+    
+class MyLLMDataset(Sequence, Dataset):
+    r"""This Dataset that can load multiple parquet files
+
+    Attributes:
+        path (`str`): 
+            The path to the directory containing the parquet files.
+        field (`str`): 
+            The field to extract from the parquet files.
+        table (`pa.Table`): 
+            The table containing all the text data.
+    """
     path: str
     field: str
     table: pa.Table
@@ -51,8 +75,33 @@ class MyLLMPreTrainDataset(Dataset):
         text = self.table[self.field][idx].as_py()
         return text
     
+    def get_batch(self, indices: list[int]) -> list[str]:
+        """Get a batch of text from the dataset
+
+        Args:
+            indices (`list[int]`): 
+                The indices of the text to get.
+
+        Returns:
+            `list[str]`: 
+                The text at the given indices. 
+        """
+        # Get the text
+        texts = [self.table[self.field][idx].as_py() for idx in indices]
+        return texts
+    
 
 class MyLLMPreTrainCollator:
+    r"""This collator will set the last token of the input as the target token.
+    
+    Attributes:
+        tokenizer (`AutoTokenizer`): 
+            The tokenizer to use.
+        padding_side (`str`):
+            The side to pad the inputs.
+        max_length (`int`):
+            The maximum length of the inputs.
+    """
     tokenizer: AutoTokenizer
     padding_side: str
     max_length: int
@@ -85,4 +134,27 @@ class MyLLMPreTrainCollator:
         # Mask the labels
         labels[attention_mask == 0] = self.tokenizer.pad_token_id
         return {'input_ids': input_ids, 'labels': labels, 'attention_mask': attention_mask}
+
+
+class MyLLMTemplateCollator(MyLLMPreTrainCollator):
+    r"""Collator for the model. This collator will apply the chat template to the input text."""
     
+    def __init__(
+        self, 
+        tokenizer: AutoTokenizer, 
+        padding_side: str = 'left', 
+        max_length: int = 512, 
+    ) -> None:
+        super().__init__(tokenizer, padding_side, max_length)
+        
+        # Check if the tokenizer has the chat template
+        if not hasattr(self.tokenizer, 'apply_chat_template'):
+            raise ValueError("The tokenizer does not have the apply_chat_template method.")
+        
+    
+    def __call__(self, batch: list[str]) -> dict[str, torch.Tensor]:
+        # Apply the chat template to the input text without encoding
+        batch = self.tokenizer.apply_chat_template(batch, tokenize=False, add_generation_prompt=True)
+        
+        # Convert batch of str to batch of encodings
+        return super().__call__(batch)

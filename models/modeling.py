@@ -31,8 +31,8 @@ class MyLLMDecoderLayer(nn.Module):
         self.debug = debug
         
         self.attn = MyLLMGroupAttention(config, layer_idx=layer_idx, debug=debug)
-        self.attn_norm = MyLLMRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.ffn_norm = MyLLMRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.attn_norm = MyLLMRMSNorm(config.hidden_size, eps=config.norm_eps)
+        self.ffn_norm = MyLLMRMSNorm(config.hidden_size, eps=config.norm_eps)
         
         # Check type of Feed Forward Network
         if config.use_coe and config.use_moe and config.moe_type == "ffn":
@@ -72,7 +72,7 @@ class MyLLMDecoderLayer(nn.Module):
             cache_position=cache_position, 
         )
         # Normalize the hidden_states
-        hidden_states = self.attn_norm(hidden_states + residual)
+        hidden_states = self.attn_norm(hidden_states + self.config.norm_scale * residual)
         
         # Residual
         if not self.config.use_moe:
@@ -85,9 +85,9 @@ class MyLLMDecoderLayer(nn.Module):
         
         # Apply residual, if model type is CoE and residual is True, then it will be executed in CoE
         if not self.config.use_coe:
-            hidden_states = hidden_states + residual
+            hidden_states = hidden_states + self.config.norm_scale * residual
         elif self.config.use_coe and not self.config.residual:
-            hidden_states = hidden_states + residual
+            hidden_states = hidden_states + self.config.norm_scale * residual
         
         # Normalize the output
         hidden_states = self.ffn_norm(hidden_states)
@@ -140,7 +140,7 @@ class MyLLMModel(MyLLMPreTrainedModel):
         ])
         
         # Initialize other necessary components
-        self.norm = MyLLMRMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.norm = MyLLMRMSNorm(config.hidden_size, config.norm_eps)
         self.rotary_emb = MyLLMRotaryEmbedding(
             config.attention_head_dim, config.max_position_embeddings, config.rope_theta
         )
@@ -406,14 +406,14 @@ class MyLLMForCausalLM(MyLLMPreTrainedModel, GenerationMixin):
         self.debug = debug
         self.vocab_size = config.vocab_size
         
-        # Initalize the causal model
+        # Initialize the causal model
         self.model = MyLLMModel(config, self.debug)
         
         # Initialize the output layer
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         
         # Initialize the loss function
-        self.loss_fn = nn.CrossEntropyLoss()
+        self.loss_fn = nn.CrossEntropyLoss(ignore_index=config.ignore_index, reduction="mean")
         
         # If debug is enabled, register the hook
         if self.debug:
@@ -491,14 +491,14 @@ class MyLLMForCausalLM(MyLLMPreTrainedModel, GenerationMixin):
         
         # Compute loss if labels are provided
         if labels is not None:
-            loss = self.loss_fn(logits, labels.view(-1))
+            loss = self.loss_fn(logits, labels.reshape(-1))
         else:
             loss = None
             
         # Create the output
         outputs = CausalLMOutputWithPast(
             loss=loss, 
-            logits=logits, 
+            logits=logits.view(*hidden_states.shape[:-1], self.vocab_size), 
             past_key_values=outputs.past_key_values, 
             hidden_states=outputs.hidden_states, 
             attentions=outputs.attentions, 
