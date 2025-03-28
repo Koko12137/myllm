@@ -1,13 +1,17 @@
 {
     "dataset": "datasets/BAAI/IndustryCorpus2/merge30k", 
-    "from_pretrained": "outs/moe-noidx-nokeep-m30k/checkpoint-12500", 
+    "from_pretrained": "outs/moe-noidx-nokeep-m30k-0328/checkpoint-40", 
     "output": "output", 
     "replace": true, 
+    "distill_args": {
+        "min_kl": 0.5, 
+        "max_kl": 0.9
+    }, 
     "training_args": {
         "learning_rate": 0.0001, 
-        "per_device_train_batch_size": 16, 
+        "per_device_train_batch_size": 4, 
         "num_train_epochs": 1, 
-        "gradient_accumulation_steps": 100, 
+        "gradient_accumulation_steps": 200, 
         "dataloader_num_workers": 5, 
         "dataloader_persistent_workers": true, 
         "use_cpu": false, 

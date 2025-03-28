@@ -7,7 +7,7 @@ from transformers import AutoTokenizer, TrainingArguments, Trainer
 
 from models.modeling import MyLLMForCausalLM
 from models.configuration import MyLLMConfig
-from utils.dataset import MyLLMPreTrainDataset
+from utils.dataset import MyLLMDataset
 from utils.io import io_operation
 
 
@@ -86,7 +86,7 @@ def test_ffn_moe() -> None:
     
     # Load dataset
     table = pq.read_table(config['dataset'])
-    train_ds = MyLLMPreTrainDataset(table, tokenizer, max_length=lm_config.max_position_embeddings)
+    train_ds = MyLLMDataset(table, tokenizer, max_length=lm_config.max_position_embeddings)
     
     # Initialize the trainer
     trainer = Trainer(

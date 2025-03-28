@@ -1,6 +1,6 @@
-from test import *
+from debugs import *
 from scripts import *
     
     
 if __name__ == "__main__":
-    pretrain_model()
+    distill_model()
